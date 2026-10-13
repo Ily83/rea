@@ -263,19 +263,40 @@ CI owns coverage; aggregate and domain/contract thresholds are maintained in
 Coverage does not replace named boundary or real-provider scenarios.
 
 CI runs six native Vitest shards without retries. Each shard emits a blob
-report; the merge job produces JUnit and JSON timing reports, plus aggregate
-coverage during full qualification. It retains available
+report; the merge job produces JUnit and JSON diagnostics, a module timing
+report, plus aggregate coverage during full qualification. It retains available
 reports even when a shard fails, uploads available diagnostics, and writes the
 slowest files to the workflow summary. Partial reports are marked diagnostic
 only. Failed, cancelled, or missing selected shards still fail the required gate,
 and aggregate coverage thresholds remain enforced in full qualification.
 Only successful complete full-tier merges publish the small `test-timings` artifact, with
 checkout-relative paths; the build job downloads that artifact for the sequencer
-instead of the coverage/JUnit bundle. Missing history falls back to native
+instead of the coverage/JUnit bundle. Timing weights come from Vitest module
+diagnostics and include tests and hooks, worker preparation, environment,
+imports, and setup. Import timings already include transform waits, which are
+not added again. The weights describe file costs under the measured worker and
+coverage settings; their sum is not workflow elapsed time. The diagnostic
+artifact retains the phase breakdown, while shard history keeps only each
+file's total. Legacy test-body-only history and missing history fall back to native
 sharding. Static checks, documentation, build, package verification, and
 real-system lanes remain separate jobs so one kind of evidence cannot stand in
 for another. Workflow syntax and expression validation runs inside the required
 static-check job when workflow changes select it, avoiding a separate runner.
+Native, provider, fixture, SQLite compatibility, and website lanes wait for
+static checks to succeed before allocating their runners. This avoids spending
+those runner slots on revisions that already fail static validation. Portable
+test shards and documentation checks remain independent of static results, so
+they can still provide diagnostic feedback. The required gate rejects skipped
+selected lanes when static checks fail; passing revisions retain all selected
+coverage. This ordering reduces peak demand on invalid revisions but can add
+static-check waiting to otherwise passing runs; it is not a measured reduction
+in end-to-end latency.
+
+Core jobs have execution limits of five minutes for classification, ten minutes
+for static checks, builds, docs, and report merging, and thirty minutes per
+portable test shard. These limits leave headroom for cold setup and full coverage
+while preventing a hung job from holding the active main run for hours. They do
+not bound runner queue waiting. Timeouts still fail the required gate.
 
 The separate `CI timings` workflow batches recent completed CI and Release runs
 hourly or on manual dispatch. It uploads `ci-job-timings-batch` with raw API pages and
@@ -841,21 +862,32 @@ observation. Manual dispatch, `ci:full`, and exact release qualification always
 run full validation.
 
 Full qualification includes aggregate coverage,
-every portable provider lane, and all native hosts below. A `ci:full` PR label
-selects full qualification on the next PR run; manual dispatch can request it
-immediately. Fast-tier broad fallbacks retain all owner lanes and the three-host
+every portable provider lane, and all native hosts below. Adding `ci:full`
+immediately starts the separate `Full PR qualification` workflow against the
+label event's merge revision; subsequent PR revisions also select the full tier
+in normal CI while that label remains. Unrelated labels do not start validation
+jobs or replace the main CI checks. Manual dispatch also requests full validation.
+Fast-tier broad fallbacks retain all owner lanes and the three-host
 package matrix; Intel macOS and coverage remain full-tier obligations. Each
 classification job records its selection and broad-fallback reasons in the run
 summary. Representative Git-diff cases live in
 `tests/boundary/filesystem/ciChangeScope.test.ts`.
 
 `CI required` always runs and checks classification and every selected lane,
-rejecting failed, cancelled, or unexpectedly skipped work. Branch protection
-should require this aggregate, `Static checks`, and `Portable tests`. Fast runs
-cancel superseded feedback for the same PR or main branch. Scheduled/manual
-qualification has a separate concurrency group: active work finishes and only
-the latest pending run is retained. Release qualification is grouped by its
-exact source SHA and cannot be cancelled by newer main pushes. Provider and
+rejecting failed, cancelled, or unexpectedly skipped work. It rejects missing or
+unknown tiers and requires every canonical scope to be explicitly `true` or
+`false`; incomplete classification cannot silently omit verification lanes.
+Branch protection
+should require this aggregate, `Static checks`, `Portable tests`, and
+`Conventional PR title`. Title validation runs separately on PR opening,
+reopening, commits, and edits; correcting a title refreshes only this lightweight
+check. It reads title text through an environment variable, executes no PR code,
+and has no token permissions. Its separate concurrency group cannot cancel
+test runs. Fast PR runs cancel superseded feedback for the same PR. Main push
+runs keep one active run and the latest pending run for that branch.
+Scheduled/manual qualification has a separate concurrency group: active work
+finishes and only the latest pending run is retained. Release qualification uses
+its exact source SHA and cannot be cancelled by newer main pushes. Provider and
 website lanes inherit their caller's scheduling; reusable
 workflows have no independent cancellation group. Direct manual lane dispatches
 run independently on disposable hosted runners. Publication
